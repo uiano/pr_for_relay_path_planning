@@ -14,7 +14,7 @@ from simulators.path_planner_simulator import sim_min_ue_rate_metrics
 
 class ExperimentSet(gsim.AbstractExperimentSet):
 
-    def experiment_1001(l_args):
+    def experiment_1034(l_args):
         """"
             This experiment plots
                 + expected rate vs. time 
@@ -105,7 +105,7 @@ class ExperimentSet(gsim.AbstractExperimentSet):
                 padding=5,
                 min_uav_rate=min_uav_rate,
                 min_ue_rate=min_ue_rate,
-                num_mc_iter=1)
+                num_mc_iter=200)
 
             ld_time_to_min_ue_rate.append(d_time_to_min_ue_rate)
             ld_prob_of_failure.append(d_prob_of_failure)
@@ -156,7 +156,7 @@ class ExperimentSet(gsim.AbstractExperimentSet):
                          legend=key)
         return [GFigure.concatenate([G1, G2], num_subplot_rows=2), G3, G4, G5]
 
-    def experiment_1002(l_args):
+    def experiment_1005(l_args):
         """"
             This experiment 
                 + Uses UrbanEnvironment.random_pts_on_street to draw BS and UE
@@ -241,7 +241,7 @@ class ExperimentSet(gsim.AbstractExperimentSet):
                 padding=5,
                 min_uav_rate=min_uav_rate,
                 min_ue_rate=min_ue_rate,
-                num_mc_iter=2,
+                num_mc_iter=200,
                 bs_ue_dist=bs_ue_dist)
 
             ld_time_to_min_ue_rate.append(d_time_to_min_ue_rate)
