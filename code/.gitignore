@@ -137,7 +137,7 @@ dmypy.json
 
 
 # gsim files
-gsim/
+gsim
 gsim_conf
 run_experiment
 gsim_conf-base
