@@ -1,4 +1,4 @@
-# pr_for_relay_path_planning
+# probabilistic_roadmaps_for_relay_path_planning
 This repository contains an implementation of the PRFI algorithm as well as the code to reproduce the numerical experiments of the paper "Probabilistic Roadmaps for Flying Relay Path Planning" by Pham Q. Viet and Daniel Romero.
 
 After cloning the repository, do the following:
