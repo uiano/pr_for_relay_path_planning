@@ -141,3 +141,11 @@ gsim
 gsim_conf
 run_experiment
 gsim_conf-base
+
+# Added by GSim
+run_experiment.py
+
+# 
+../.DS_Store
+../.vscode/
+experiments/example_experiments.py
