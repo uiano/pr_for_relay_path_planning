@@ -27,7 +27,7 @@ import os
 
 class ExperimentSet(gsim.AbstractExperimentSet):
     """
-        68. Experiments to compare algorithms planning path to serve Static UE
+        67. Experiments to compare algorithms planning a path to serve Static UE
     """
 
     # vs dist_bs_ue: time to connect, frac. outage time, total transferred data
@@ -366,7 +366,7 @@ class ExperimentSet(gsim.AbstractExperimentSet):
             l_min_ue_rate=list(v_min_ue_rate))
 
     """
-        70. Experiments to compare algorithms planning path to serve Moving UE
+        70. Experiments to compare algorithms planning a path to serve Moving UE
     """
 
     # vs min_ue_rate: time to connect, frac. outage time, total transferred data
