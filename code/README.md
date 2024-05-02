@@ -23,7 +23,7 @@ To run the simulations, type
 python run_experiment.py M
 ```
 
-where M is the number of an experiment, e.g., 6725, 6739, etc. 
+where M is the number of an experiment, e.g. 6725, 6739, etc. 
 
 The code of the experiments can be found in experiments/paper_experiments.py. 
 
