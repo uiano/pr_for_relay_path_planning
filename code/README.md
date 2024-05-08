@@ -11,6 +11,10 @@ cd ..
 bash gsim/install.sh
 
 cd common
+# execute the 1st time
+python grid_utilities_setup.py build
+python grid_utilities_setup.py install
+# execute the 2nd time
 python grid_utilities_setup.py build
 python grid_utilities_setup.py install
 cd ..
