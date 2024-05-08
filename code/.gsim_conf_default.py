@@ -20,7 +20,7 @@ each project. """
 use_mayavi = False
 
 # Select an experiment file:
-module_name = "experiments.relay_placement_experiments"
+module_name = "experiments.paper_experiments"
 
 # GFigure
 import gsim.gfigure
