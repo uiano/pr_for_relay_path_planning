@@ -8,5 +8,5 @@ The journal version is available at [journal article](https://arxiv.org/abs/2310
 
 - For static UE: [illu-video-1.mp4](https://www.youtube.com/watch?v=wwEpbFMzJXY) and [illu-video-2.mp4](https://www.youtube.com/watch?v=nldyPijbKpE) illustrate the PRFI algorithm and
   its benchmarks.
-- For moving UE: [illu-video-3.mp4](https://www.youtube.com/watch?v=fYBJi71kYr8) illustate PRFI for Moving UE in operation.
+- For moving UE: [illu-video-3.mp4](https://www.youtube.com/watch?v=Tvs_qh_3gbE) illustate PRFI for Moving UE in operation.
 - Implementation of the proposed algorithm is inside the folder named "code".
