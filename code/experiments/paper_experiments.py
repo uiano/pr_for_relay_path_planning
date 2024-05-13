@@ -910,7 +910,7 @@ class ExperimentSet(gsim.AbstractExperimentSet):
         num_mc_iter = 1
 
         min_uav_rate = 200e3
-        # distance btw two adjacent diagnonal grid points: 14.678
+        # distance btw two adjacent diagonal grid points: 14.678
         # np.sqrt(np.sum(np.square(env.fly_grid.spacing)))
         max_uav_speed = 7  # m/s
         samp_int = 60.237 / max_uav_speed
@@ -930,11 +930,11 @@ class ExperimentSet(gsim.AbstractExperimentSet):
         ldv_cumsum_data_over_time = []
         ld_average_rate = []
 
-        min_ue_rate = 60e6
+        min_ue_rate = 100e6
 
         dist_bs_ue = 450
 
-        l_min_heights = [20, 60]  # 20, 30, 40, 50, 60
+        l_min_heights = [20, 30, 40, 50, 60]  # 20, 30, 40, 50, 60
         l_building_heights = [[height - 20] + [height + 20]
                               for height in l_min_heights]
         l_mean_building_heights = [
