@@ -4,6 +4,8 @@ from relays.path_planners import PathPlanner
 from common.grid import RectangularGrid3D
 import pickle, os
 
+# Functions to save and load realizations and results
+
 
 def save_realization(mc_ind,
                      environment,
@@ -75,6 +77,9 @@ def save_or_load_results(ind_mc,
         return d_results["v_ue_rate"]
 
 
+# move to BlockUrbanEnvironment
+
+
 def is_out_buildings(env, pt, padding=5):
     # Padding around buildings to avoid the noncoincide between the buildings and slf grid
     v_safety = padding * np.array([[-1, 1]])
@@ -88,53 +93,16 @@ def is_out_buildings(env, pt, padding=5):
         return True
 
 
-def random_ue_bs_w_padding_building_wo_los(env, padding=5, num_pts=2):
-
-    l_pts = []
-
-    while len(l_pts) < num_pts:
-        pt_random = env.random_pts_on_street(1)[0]
-        if is_out_buildings(env, pt_random, padding=padding):
-            l_pts.append(pt_random)
-
-    if env.slf.line_integral(l_pts[0], l_pts[1], mode="c")[0] == 0:
-        return random_ue_bs_w_padding_building_wo_los(env,
-                                                      padding=padding,
-                                                      num_pts=num_pts)
-    else:
-        return l_pts
-
-
-def random_ue_bs_w_padding_building_lower_than_rate_old(
-        env, channel, padding=5, max_direct_rate=None):
+def get_random_ue_loc(env,
+                      channel,
+                      min_ue_rate=None,
+                      dist_bs_ue=None,
+                      loc_bs=None,
+                      num_max_tries=1000):
     """
-    This function returns two locations such that the rate between them is never
-    greater than `max_direct_rate`.
-    
+    Generate a random UE location with distance dist_bs_ue to the BS, such that
+    the initial rate between the BS and UE is lower than min_ue_rate.
     """
-
-    assert max_direct_rate is not None
-
-    l_pts = []
-
-    while len(l_pts) < 2:
-        pt_random = env.random_pts_on_street(1)[0]
-        if is_out_buildings(env, pt_random, padding=padding):
-            l_pts.append(pt_random)
-
-    bs_loc = l_pts[0]
-    ue_loc = l_pts[1]
-
-    if channel.dbgain_to_capacity(channel.dbgain(bs_loc,
-                                                 ue_loc)) >= max_direct_rate:
-        return random_ue_bs_w_padding_building_lower_than_rate_old(
-            env, channel, padding=padding, max_direct_rate=max_direct_rate)
-    else:
-        return l_pts
-
-
-def random_ue_bs_w_padding_building_w_dist_lower_min_rate(
-        env, channel, min_ue_rate=None, dist_bs_ue=None, loc_bs=None):
 
     def random_pts_w_dist(bs_loc):
         """
@@ -161,21 +129,24 @@ def random_ue_bs_w_padding_building_w_dist_lower_min_rate(
     assert loc_bs is not None
 
     b_in_area_len = False
-    while not b_in_area_len:
-        print('--- Regenerate ue_loc due to not on street')
+
+    remaining_tries = num_max_tries
+    while (not b_in_area_len) and (remaining_tries > 0):
+        # print('--- Regenerate ue_loc due to not on street')
+        remaining_tries -= 1
         loc_ue = random_pts_w_dist(loc_bs)
         if check_in_area_len(loc_ue) and is_out_buildings(env, loc_ue):
             b_in_area_len = True
+    assert remaining_tries > 0, f'Tried {str(num_max_tries)} times, cannot find a valid ue_loc'
 
     if channel.dbgain_to_capacity(channel.dbgain(loc_bs,
                                                  loc_ue)) >= min_ue_rate:
-        print('--- Regenerate ue_loc due to ininital rate >= min_ue_rate')
-        return random_ue_bs_w_padding_building_w_dist_lower_min_rate(
-            env,
-            channel=channel,
-            min_ue_rate=min_ue_rate,
-            dist_bs_ue=dist_bs_ue,
-            loc_bs=loc_bs)
+        # print('--- Regenerate ue_loc due to ininital rate >= min_ue_rate')
+        return get_random_ue_loc(env,
+                                 channel=channel,
+                                 min_ue_rate=min_ue_rate,
+                                 dist_bs_ue=dist_bs_ue,
+                                 loc_bs=loc_bs)
 
     else:
 
@@ -208,17 +179,20 @@ def gen_path_on_street(env,
     assert dist_bs_ue is not None
 
     # generate start location of the UE
-    loc_ue = random_ue_bs_w_padding_building_w_dist_lower_min_rate(
-        env,
-        channel=channel,
-        min_ue_rate=min_ue_rate,
-        dist_bs_ue=dist_bs_ue,
-        loc_bs=loc_bs)
+    loc_ue = get_random_ue_loc(env,
+                               channel=channel,
+                               min_ue_rate=min_ue_rate,
+                               dist_bs_ue=dist_bs_ue,
+                               loc_bs=loc_bs)
 
     # static UE
     num_samples_total = int(np.ceil(time_duration / samp_int))
     if num_samples_total == 1:
         return loc_ue
+
+    if num_pts_grid is None:
+        lm_ue_path = [loc_ue[None, ...]] * num_samples_total
+        return lm_ue_path
 
     ue_grid = RectangularGrid3D(area_len=env.area_len, num_pts=num_pts_grid)
     ue_grid.disable_by_indicator(env.building_indicator)
@@ -274,37 +248,6 @@ def gen_path_on_street(env,
     return lm_ue_path
 
 
-def single_mc(d_mean_time_n_rate, l_planners, bs_loc, ue_loc, samp_int,
-              max_uav_speed):
-    """
-        Run single MC iteration,
-        If no path found, return None
-        Otherwise, update d_mean_time
-    """
-
-    for planner in l_planners:
-
-        lm_path = planner.plan_path(
-            bs_loc=bs_loc,
-            ue_loc=ue_loc,
-            samp_int=samp_int,  #s
-            max_uav_speed=max_uav_speed)
-
-        assert lm_path is not None
-
-        time_n_rate = planner.time_to_connect(lm_path, samp_int, ue_loc)
-
-        assert time_n_rate is not None
-
-        print(
-            f"----- {planner.name}, time: {time_n_rate[0]}, rate: {time_n_rate[1]},"
-        )
-
-        d_mean_time_n_rate[planner.name].append(time_n_rate)
-
-    return d_mean_time_n_rate
-
-
 def get_time_to_min_ue_rate(v_ue_rate, min_ue_rate, samp_int):
     """
     Returns
@@ -330,6 +273,10 @@ def single_mc_rate(l_planners,
                    path_save_to=None,
                    b_run_new=True):
     """
+    Args:
+        - `b_run_new`: if True, generate a new realization, plan path, and
+          compute rate; else load saved results.
+        
     Returns: 
         - `l_ue_rates_vs_time`: list whose n-th entry is the rate vs. time of
           l_planners[n].
@@ -339,11 +286,11 @@ def single_mc_rate(l_planners,
     for planner in l_planners:
 
         if b_run_new:
-            # static ue
+            # moving ue
             if type(lm_ue_path) is list:
                 lm_path = planner.plan_path_to_serve_moving_ue(
                     loc_bs, lm_ue_path)
-            # moving ue
+            # static ue
             else:
                 lm_path = planner.plan_path_to_serve_static_ue(
                     bs_loc=loc_bs,
@@ -573,11 +520,12 @@ def create_new_realization(f_environment,
                            samp_int=None,
                            ue_speed=None,
                            time_duration=None,
-                           num_pts_ue_grid=None):
+                           num_pts_ue_grid=None,
+                           dist_change=50):
     """
     If dist_bs_ue is
         + None, it is randomly generated.
-        + Else, dist_bs_ue += np.random.rand().
+        + Else, dist_bs_ue += dist_change * (2 * np.random.rand() - 1).
     """
 
     def get_dist_bs_ue(env):
@@ -599,7 +547,7 @@ def create_new_realization(f_environment,
     if dist_bs_ue is None:
         dist_bs_ue = get_dist_bs_ue(environment)
     else:
-        dist_bs_ue += 20 * (2 * np.random.rand() - 1)
+        dist_bs_ue += dist_change * (2 * np.random.rand() - 1)
 
     lm_ue_path = gen_path_on_street(
         environment,
@@ -675,6 +623,7 @@ def sim_metrics_vs_min_ue_rate_2serve_ue(f_environment,
             lm_ue_path = d_realization["lm_ue_path"]
 
         # num_planners x num_time_samples
+        # b_run_new = True
         lv_ue_rates_vs_time = single_mc_rate(l_planners=l_planners,
                                              channel=channel,
                                              min_uav_rate=min_uav_rate,
@@ -701,3 +650,150 @@ def sim_metrics_vs_min_ue_rate_2serve_ue(f_environment,
         l_planners, llv_ue_rates_vs_time, samp_int=samp_int)
 
     return d_time_to_min_ue_rate, d_prob_failure, d_prob_outage, dv_ue_rates_vs_time, dv_cumsum_data_over_time, d_average_rate
+
+
+def sim_optimality_vs_dist_bs_static_ue(f_environment,
+                                        f_channel,
+                                        lf_planners,
+                                        percent_pts_disable=None,
+                                        samp_int=None,
+                                        max_uav_speed=None,
+                                        ind_mc_iter_start=0,
+                                        num_mc_iter=1,
+                                        dist_bs_ue=500,
+                                        min_ue_rate=None,
+                                        loc_bs=None,
+                                        loc_ue=None,
+                                        save_at=None,
+                                        b_run_new=True):
+
+    ll_is_optimal = []
+
+    for ind_mc in range(ind_mc_iter_start, ind_mc_iter_start + num_mc_iter):
+        print(f'\n-- MC iteration: {ind_mc}')
+
+        if b_run_new:
+            assert percent_pts_disable is not None and percent_pts_disable < 1, 'percentage_amount_pts_to_disable must be in (0, 1)'
+
+            environment = f_environment()
+            environment.fly_grid.disable_at_random(
+                percent_pts_disable=percent_pts_disable)
+
+            channel = f_channel(environment)
+
+            l_planners = [
+                f_planner(environment, channel) for f_planner in lf_planners
+            ]
+
+            if loc_ue is None:
+                assert dist_bs_ue is not None and loc_bs is not None, 'dist_bs_ue and loc_bs cannot be None when loc_ue is None'
+                dist_bs_ue += 100 * (2 * np.random.rand() - 1)
+                loc_ue = get_random_ue_loc(environment,
+                                           channel=channel,
+                                           min_ue_rate=min_ue_rate,
+                                           dist_bs_ue=dist_bs_ue,
+                                           loc_bs=loc_bs)
+
+            if save_at is not None:
+                save_realization(ind_mc,
+                                 environment,
+                                 channel,
+                                 loc_bs,
+                                 loc_ue,
+                                 path_save_to=save_at)
+        else:
+            # load saved realization
+            path_load_from = save_at + f"mc{ind_mc:03}.pickle"
+            with open(path_load_from, 'rb') as file:
+                d_realization = pickle.load(file)
+            environment = d_realization["environment"]
+            channel = d_realization["channel"]
+            l_planners = [
+                f_planner(environment, channel) for f_planner in lf_planners
+            ]
+            loc_ue = d_realization["lm_ue_path"]
+
+        def single_mc_optimality(l_planners=l_planners,
+                                 max_uav_speed=max_uav_speed,
+                                 samp_int=samp_int,
+                                 loc_bs=loc_bs,
+                                 loc_ue=loc_ue,
+                                 save_at=None,
+                                 b_run_new=True):
+
+            def save_or_load_status(ind_mc,
+                                    planner_name,
+                                    status,
+                                    save_at,
+                                    b_save=True):
+                save_at = save_at + planner_name
+                if b_save:
+                    os.makedirs(save_at, exist_ok=True)
+                    save_at += f"/mc{ind_mc:03}_output.pickle"
+
+                    d_results = {
+                        "status": status,
+                    }
+
+                    # save to pickle file
+                    with open(save_at, 'wb') as file:
+                        pickle.dump(d_results, file)
+                else:
+                    # load results
+                    path_load_from = save_at + f"/mc{ind_mc:03}_output.pickle"
+                    with open(path_load_from, 'rb') as file:
+                        d_results = pickle.load(file)
+
+                    return d_results["status"]
+
+            l_is_optimal = []
+
+            for planner in l_planners:
+                if b_run_new:
+                    lm_path = planner.plan_path_to_serve_static_ue(
+                        bs_loc=loc_bs,
+                        ue_loc=loc_ue,
+                        samp_int=samp_int,  #s
+                        max_uav_speed=max_uav_speed)
+
+                    # environment.l_users = [loc_bs, loc_ue]
+                    # environment.plot()
+
+                    if lm_path is not None:
+                        status = planner.b_no_waiting_or_lifting
+
+                    else:
+                        print(f'--- No path found for {planner.name}')
+                        status = np.nan
+
+                    # save results
+                    save_or_load_status(ind_mc,
+                                        planner.name,
+                                        status,
+                                        save_at=save_at,
+                                        b_save=True)
+                else:
+                    assert save_at is not None
+                    status = save_or_load_status(ind_mc,
+                                                 planner.name,
+                                                 status=None,
+                                                 save_at=save_at,
+                                                 b_save=False)
+
+                l_is_optimal.append(status)
+
+            return l_is_optimal
+
+        l_is_optimal = single_mc_optimality(l_planners=l_planners,
+                                            max_uav_speed=max_uav_speed,
+                                            samp_int=samp_int,
+                                            loc_bs=loc_bs,
+                                            loc_ue=loc_ue,
+                                            save_at=save_at,
+                                            b_run_new=b_run_new)
+
+        # num_mc x num_planners
+        if l_is_optimal is not None:
+            ll_is_optimal.append(l_is_optimal)
+
+    return ll_is_optimal

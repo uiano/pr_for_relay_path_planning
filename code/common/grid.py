@@ -651,6 +651,43 @@ class RectangularGrid3D(Grid):
         else:
             self.t_enabled = np.logical_and(self.t_enabled, mask)
 
+    def disable_at_random(self, percent_pts_disable=0., b_keep_highest=False):
+        """
+            Randomly disables `num_pts_to_disable` points.
+             
+            If `b_keep_highest` is True, only points that are below the
+            highest level of the grid are considered for disabling. Else, all
+            points are considered.
+        """
+
+        num_pts_to_disable = int(
+            np.floor(self.list_pts().shape[0] * percent_pts_disable))
+
+        if b_keep_highest:
+            highest_flight_level = np.max(self.list_pts()[:, 2])
+            v_candidate_inds = np.where(
+                self.list_pts()[:, 2] < highest_flight_level)[0]
+            num_candidates = v_candidate_inds.shape[0]
+        else:
+            num_candidates = self.list_pts().shape[0]
+            v_candidate_inds = np.arange(num_candidates)
+
+        l_inds_to_disable = np.random.choice(v_candidate_inds,
+                                             np.minimum(
+                                                 num_candidates,
+                                                 num_pts_to_disable),
+                                             replace=False)
+
+        mask = self.unlist_vals([[ind in l_inds_to_disable]
+                                 for ind in range(self.list_pts().shape[0])])
+
+        mask = np.logical_not(mask[0, ...])
+
+        if self.t_enabled is None:
+            self.t_enabled = mask
+        else:
+            self.t_enabled = np.logical_and(self.t_enabled, mask)
+
     def vertical_inds(self, increasing_z=True):
         """ Returns an iterator of lists. Each list contains the indices of the
         enabled grid points on a certain vertical, i.e., points with the same x and y.

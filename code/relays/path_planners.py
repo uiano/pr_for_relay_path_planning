@@ -1,17 +1,18 @@
 import random
 import sys
-from line_profiler import profile
 
 import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 import numpy as np
 
-from gsim_conf import use_mayavi
+from channels.alhourani_channel import AlHouraniChannel
+
 from common.fields import FunctionVectorField
-import copy
-import warnings
+
 import heapq
 import time
+
+import cvxpy as cp
 
 
 class PathPlanner():
@@ -39,10 +40,24 @@ class PathPlanner():
         self.pars_on_name = pars_on_name
         self.name_custom = name_custom
 
+    def _plan_take_off_path(self, uav_loc_start, samp_int, max_uav_speed):
+
+        fly_height = self._environment.fly_grid.list_pts()[:, 2].max()
+
+        uav_loc_takeoff_end = np.array(
+            [uav_loc_start[0], uav_loc_start[1], fly_height])
+        lv_locs = self._loc_at_each_time_step(uav_loc_start,
+                                              uav_loc_takeoff_end, samp_int,
+                                              max_uav_speed)
+
+        return lv_locs
+
     def _loc_at_each_time_step(self, start_loc, end_loc, samp_int,
                                max_uav_speed):
         """
-            Discretizes the line segment between start_loc and end_loc into a list of locations such that the distance between two consecutive locations is smaller than or equal sampt_int * max_uav_speed.
+        Discretizes the line segment between start_loc and end_loc into a list
+        of locations such that the distance between two consecutive locations is
+        smaller than or equal sampt_int * max_uav_speed.
         """
 
         # Find the distance that the UAV can travel in one sample interval
@@ -59,47 +74,42 @@ class PathPlanner():
         v_direction = v_direction / dist
         num_steps = int(np.floor(dist / dist_per_int))
 
-        # Matrix of points from uav_loc_start to the mid point of uav_loc_start and ue_loc
+        # Matrix of points from uav_loc_start to the mid point of uav_loc_start
+        # and ue_loc
         l_uav_loc = [uav_loc_start]
         l_uav_loc += [
             uav_loc_start + ind_step * dist_per_int * v_direction
             for ind_step in range(1, num_steps + 1)
-        ]
+        ] + [end_loc]
 
         return l_uav_loc
 
-    def _path_w_takeoff(self, uav_loc_start, uav_loc_end, samp_int,
-                        max_uav_speed):
+    def _plan_path_w_takeoff(self, uav_loc_start, loc_end_on_ground, samp_int,
+                             max_uav_speed):
         """
-            Returns:
-                + l_loc_vs_time: num_loc x 3, a list of locations from
-                  uav_loc_start to ue_loc which consists of the locations
-                  between uav_loc_start and the point above it (locations in the
-                  takeoff phase) and between that point and the point above
-                  ue_loc.
+        Returns:
+            + lv_loc_vs_time: a list of (3,) locations from uav_loc_start to the
+              point above loc_end_on_ground. Particularly, the list consists of
+              the locations of the takeoff phase and the points in the line
+              segment between the point above uav_loc_start and the point above
+              loc_end_on_ground.
         """
-        # Take off phase
-        uav_loc_takeoff_end = np.array(
-            [uav_loc_start[0], uav_loc_start[1], self.fly_height])
 
-        l_loc_takeoff_vs_time = self._loc_at_each_time_step(
-            uav_loc_start, uav_loc_takeoff_end, samp_int, max_uav_speed)
+        # take off
+        lv_loc_takeoff_vs_time = self._plan_take_off_path(
+            uav_loc_start, samp_int, max_uav_speed)
+        num_takeoff_int = len(lv_loc_takeoff_vs_time) - 1
 
-        num_takeoff_int = len(l_loc_takeoff_vs_time)
-
-        # Flying phase
-        ue_loc_above = np.array(
-            [uav_loc_end[0], uav_loc_end[1], self.fly_height])
+        # fly horizontally
+        loc_end_top = np.array(
+            [loc_end_on_ground[0], loc_end_on_ground[1], self.fly_height])
         l_loc_fly_vs_time = self._loc_at_each_time_step(
-            uav_loc_takeoff_end, ue_loc_above, samp_int, max_uav_speed)
+            lv_loc_takeoff_vs_time[-1], loc_end_top, samp_int, max_uav_speed)
+        num_fly_int = len(l_loc_fly_vs_time) - 1
 
-        l_loc_fly_vs_time.append(ue_loc_above)
+        lv_loc_vs_time = lv_loc_takeoff_vs_time + l_loc_fly_vs_time[1:]
 
-        num_fly_int = len(l_loc_fly_vs_time)
-
-        l_loc_vs_time = l_loc_takeoff_vs_time + l_loc_fly_vs_time
-
-        return l_loc_vs_time, num_takeoff_int, num_fly_int
+        return lv_loc_vs_time, num_takeoff_int, num_fly_int
 
     def constrain_path_with_rmin(self, lm_path, min_uav_rate, bs_loc):
         """
@@ -747,7 +757,7 @@ class PathPlanner():
                 # node. Initially, all elements are infinity except the
                 # ind_node_start-th element, which is zero.
                 v_distances = np.array(
-                    [np.Inf] *
+                    [np.inf] *
                     num_nodes)  #l_distances = [sys.maxsize] * num_nodes
                 v_distances[ind_node_start] = 0
 
@@ -941,7 +951,8 @@ class PathPlanner():
                                 samp_int,
                                 lv_ue_rates_vs_time,
                                 l_label,
-                                legend_loc=1):
+                                legend_loc='upper left',
+                                save_video_as=None):
         """
         Args:
             + lv_ue_rates_vs_time: list of vectors of UE rates vs. time. Element n of vector i is the user rate at time step n of benchmark i. Different vectors may have different lengths.
@@ -978,10 +989,15 @@ class PathPlanner():
         linewidth = 1.5
 
         x = []
-        ll_rates = [[], [], [], []]
+        ll_rates = [[] for _ in range(len(lv_ue_rates_vs_time))]
         l_min_ue_rate = []
 
         fig, ax = plt.subplots()
+
+        l_styles_rate_vs_time = [
+            '#9467bd', '#ff7f0e', '#8c564b', '#2ca02c', '#1f77b4', '#d62728',
+            '#000000'
+        ]  # '#e377c2',
 
         # function that draws each frame of the animation
         def animate(ind_step):
@@ -996,16 +1012,15 @@ class PathPlanner():
                 ax.plot(x,
                         ll_rates[ind],
                         linewidth=linewidth,
+                        color=l_styles_rate_vs_time[ind],
                         label=l_label[ind])
 
             ax.plot(x,
                     l_min_ue_rate,
-                    linestyle='dashed',
+                    linestyle=':',
                     linewidth=linewidth,
                     color='black',
                     label='Target UE rate [Mbps]')
-            ax.set_xlim([0, ind_step * samp_int])
-            ax.set_ylim([0, v_max_rates[ind_step]])
             ax.set_xlabel('Time [s]')
             ax.set_ylabel('UE Rate [Mbps]')
             ax.grid()
@@ -1017,21 +1032,149 @@ class PathPlanner():
                                       frames=max_num_samples,
                                       interval=100,
                                       repeat=False)
+        if save_video_as is not None:
+            ani.save(save_video_as)  # , writer='ffmpeg', fps=10
 
-        plt.show()
+        plt.close()
 
         return ani
 
+    @staticmethod
+    def check_ue_static_over_time(lm_ue_path):
+        """
+        Args:
+            lm_ue_path: list of (1, 3) matrices.
+        """
+        m_ue_path = np.array(lm_ue_path)[:, 0, :]
+        assert np.sum(
+            m_ue_path -
+            m_ue_path[0]) == 0, "The UE location must be fixed over time."
 
+    @staticmethod
+    def find_fly_grid_levels(fly_grid):
+        """
+        Returns the heights of flight levels in fly_grid, sorted in ascending
+        order.
+        """
+        m_grid_pts = fly_grid.list_pts()
+        l_fly_levels = list(set(m_grid_pts[:, 2]))
+        l_fly_levels.sort()
+        return l_fly_levels
+
+    @staticmethod
+    def find_grid_pts_highest_level(fly_grid):
+        """
+        Returns a np.array of shape (num_pts_on_top, 3) of the grid points at
+        the highest flight level in fly_grid.
+        """
+
+        # disable the grid points that are lower than l_fly_levels[-1]
+        def is_at_least_height(pt, height):
+            return pt[2] >= height
+
+        l_fly_levels = PathPlanner.find_fly_grid_levels(fly_grid)
+
+        fly_grid.disable_by_indicator(
+            lambda pt: not is_at_least_height(pt, l_fly_levels[-1]))
+        m_grid_pts_on_top = fly_grid.list_pts()
+
+        return m_grid_pts_on_top
+
+    @staticmethod
+    def find_highest_grid_pt_max_rate(env,
+                                      channel,
+                                      min_uav_rate,
+                                      bs_loc,
+                                      ue_loc,
+                                      loc_uav1=None):
+        """
+        If loc_uav1 is 
+        
+            . not None, then it is assumed that there are two UAVs and the
+            function finds the grid point for UAV 2 at the highest flight level
+            that maximizes the UE rate given that UAV 1 is at loc_uav1.
+
+            . None, then it is assumed that there is only one UAV and the
+            function finds the grid point for that UAV at the highest flight
+            level that maximizes the UE rate.
+        """
+
+        fly_height = env.fly_grid.list_pts()[:, 2].max()
+
+        # find the grid points at the highest flight level
+        m_grid_pt_candidates = env.fly_grid.list_pts()
+        m_grid_pt_candidates = m_grid_pt_candidates[m_grid_pt_candidates[:, 2]
+                                                    == fly_height]
+
+        # find the grid point that maximizes the UE rate
+        l_rate_candidates = []
+        for grid_pt_candidate in m_grid_pt_candidates:
+            if loc_uav1 is not None:
+                conf_pt = np.concatenate(
+                    (loc_uav1[None, :], grid_pt_candidate[None, :]), axis=0)
+            else:
+                conf_pt = grid_pt_candidate[None, :]
+            l_rate_candidates.append(
+                PathPlanner.conf_pt_to_ue_rate(channel, conf_pt, min_uav_rate,
+                                               bs_loc, ue_loc))
+        return m_grid_pt_candidates[np.argmax(l_rate_candidates)]
+
+    @staticmethod
+    def plan_takeoff_path(fly_grid, bs_loc):
+        """
+        Returns a list of 3D points forming the takeoff path from bs_loc to the
+        highest flight level in fly_grid.
+        """
+
+        l_fly_levels = PathPlanner.find_fly_grid_levels(fly_grid)
+
+        # find the nearest grid point to the BS
+        m_takeoff_path = np.tile(fly_grid.nearest_pt(bs_loc),
+                                 (len(l_fly_levels), 1))
+        m_takeoff_path[:, 2] = l_fly_levels
+        m_takeoff_path = np.concatenate((bs_loc[
+            None,
+        ], m_takeoff_path),
+                                        axis=0)
+
+        return list(m_takeoff_path)
+
+    @staticmethod
+    def find_adjacent_grid_pt_closest_ue(fly_grid_top, v_loc_current,
+                                         v_loc_ue):
+        """
+        Returns the grid point location on fly_grid_top that is adjacent to
+        v_loc_current and closest to v_loc_ue.
+        """
+
+        l_grid_pts_on_top = fly_grid_top.list_pts()
+
+        l_adj_grid_pts = l_grid_pts_on_top[list(
+            fly_grid_top.get_inds_adjacent(v_loc_current, l_grid_pts_on_top))]
+
+        v_loc_next = l_adj_grid_pts[np.argmin(
+            [np.linalg.norm(pt - v_loc_ue) for pt in l_adj_grid_pts])]
+
+        return v_loc_next
+
+
+# [zhang2022cooperative, zeng2016relaying, liu2021relaying]
 class SingleRelayMidpointPathPlanner(PathPlanner):
     """ 
     One UAV takes off vertically to an altitude of self.fly_height. Then it flies towards the midpoint between the user and the BS at the same height. 
 
     The UAV stops if the rate between that UAV and the BS reaches min_uav_rate.
+
+    The following papers coincide to this benchmark: 
+        . [zeng2016relaying] -> Zeng et al.
+        . [zhang2022cooperative] -> Zhang et al. (2022)
+        . [liu2021relaying] -> Liu et al.
+
+    Was Benchmark 1
     
     """
 
-    _name_on_figs = "Benchmark 1"
+    _name_on_figs = "Zeng et al."
 
     def __init__(self, fly_height=40, min_uav_rate=None, **kwargs):
 
@@ -1052,21 +1195,164 @@ class SingleRelayMidpointPathPlanner(PathPlanner):
         print(f'    o {self.name}')
 
         # trajectory without min_uav_rate
-        l_loc_vs_time, _, _ = self._path_w_takeoff(uav_loc_start,
-                                                   (bs_loc + ue_loc) / 2,
-                                                   samp_int, max_uav_speed)
+        l_loc_vs_time, _, _ = self._plan_path_w_takeoff(
+            uav_loc_start, (bs_loc + ue_loc) / 2, samp_int, max_uav_speed)
         lm_path_coarse = [loc[None, :] for loc in l_loc_vs_time]
 
-        # lm_path_coarse = self.constrain_path_with_rmin(lm_path_coarse,
-        #                                                self.min_uav_rate,
-        #                                                bs_loc)
+        lm_path = self.resample(lm_path_coarse, samp_int, max_uav_speed)
+        lm_path = self.constrain_path_with_rmin(lm_path, self.min_uav_rate,
+                                                bs_loc)
+
+        return lm_path
+
+    def plan_path_to_serve_moving_ue(self, bs_loc, lm_ue_path):
+
+        print(f'    o {self.name}')
+
+        # take off
+        fly_grid = self._environment.fly_grid.clone()
+        lv_loc_takeoff = self.plan_takeoff_path(fly_grid, bs_loc)
+
+        # disable the grid points that are lower than l_fly_levels[-1]
+        def is_at_least_height(pt, height):
+            return pt[2] >= height
+
+        fly_grid.disable_by_indicator(
+            lambda pt: not is_at_least_height(pt, lv_loc_takeoff[-1][2]))
+
+        lm_path = []
+        for ind_loc, m_ue_loc in enumerate(lm_ue_path):
+
+            if ind_loc < len(lv_loc_takeoff):
+                lm_path.append(lv_loc_takeoff[ind_loc][None, :])
+            else:
+
+                m_loc_next = self.find_adjacent_grid_pt_closest_ue(
+                    fly_grid, lm_path[-1][0],
+                    (bs_loc + m_ue_loc[0]) / 2)[None, :]
+
+                rate_next = self.rate_from_path(self._channel, [m_loc_next],
+                                                self.min_uav_rate,
+                                                bs_loc,
+                                                lm_ue_path=None)[0, 0]
+
+                if rate_next >= self.min_uav_rate:
+                    lm_path.append(m_loc_next)
+                else:
+                    lm_path.append(lm_path[-1])
+
+        # lm_path_to_plot = self.combine_paths(lm_path, lm_ue_path)
+
+        return lm_path
+
+
+# [ghazzai2018dual]
+class SingleRelayAlhouraniMaxRatePathPlanner(PathPlanner):
+    """
+    This planner plans a path for a UAV that 
+        1. takes off vertically from the BS to the highest flight level and 
+        then 
+        2. follows a horizontal straight line to the grid point that maximizes
+           the rate of a static UE w.r.t the Alhourani channel model.
+
+    A simplification of [ghazzai2018dual]
+    """
+
+    _name_on_figs = "Ghazzai et al."
+
+    def __init__(self, fly_height=40, min_uav_rate=None, **kwargs):
+
+        super().__init__(**kwargs)
+        self.fly_height = fly_height
+        self.min_uav_rate = min_uav_rate
+
+        self.channel_Alhourani = AlHouraniChannel(
+            freq_carrier=3e8 / self._channel.wavelength,
+            bandwidth=self._channel.bandwidth,
+            tx_dbpower=self._channel.tx_dbpower,
+            noise_dbpower=self._channel.noise_dbpower,
+            dbatten_factor_los=2.3,
+            dbatten_factor_nlos=34,
+            env_const_a=12.08,
+            env_const_b=0.11)
+
+    def plan_path_to_serve_static_ue(self,
+                                     bs_loc,
+                                     ue_loc,
+                                     samp_int,
+                                     max_uav_speed,
+                                     uav_loc_start=None):
+
+        if uav_loc_start is None:
+            uav_loc_start = bs_loc
+
+        print(f'    o {self.name}')
+
+        v_des_grid_pt = self.find_highest_grid_pt_max_rate(
+            self._environment, self.channel_Alhourani, self.min_uav_rate,
+            bs_loc, ue_loc)
+
+        l_loc_vs_time = self._plan_path_w_takeoff(uav_loc_start, v_des_grid_pt,
+                                                  samp_int, max_uav_speed)[0]
+        lm_path_coarse = [loc[None, :] for loc in l_loc_vs_time]
 
         lm_path = self.resample(lm_path_coarse, samp_int, max_uav_speed)
+        lm_path = self.constrain_path_with_rmin(lm_path, self.min_uav_rate,
+                                                bs_loc)
+        return lm_path
+
+    def plan_path_to_serve_moving_ue(self, bs_loc, lm_ue_path):
+
+        print(f'    o {self.name}')
+
+        # take off
+        fly_grid = self._environment.fly_grid.clone()
+        lv_loc_takeoff = self.plan_takeoff_path(fly_grid, bs_loc)
+
+        # disable the grid points that are lower than l_fly_levels[-1]
+        def is_at_least_height(pt, height):
+            return pt[2] >= height
+
+        fly_grid.disable_by_indicator(
+            lambda pt: not is_at_least_height(pt, lv_loc_takeoff[-1][2]))
+
+        lm_path = []
+        for ind_loc, m_ue_loc in enumerate(lm_ue_path):
+
+            if ind_loc < len(lv_loc_takeoff):
+                lm_path.append(lv_loc_takeoff[ind_loc][None, :])
+            else:
+
+                # find the grid point that maximizes the UE rate w.r.t. the
+                # Alhourani channel model
+                v_des_grid_pt = self.find_highest_grid_pt_max_rate(
+                    self._environment, self.channel_Alhourani,
+                    self.min_uav_rate, bs_loc, m_ue_loc[0])
+
+                m_loc_next = self.find_adjacent_grid_pt_closest_ue(
+                    fly_grid, lm_path[-1][0], v_des_grid_pt)[None, :]
+
+                rate_next = self.rate_from_path(self._channel, [m_loc_next],
+                                                self.min_uav_rate,
+                                                bs_loc,
+                                                lm_ue_path=None)[0, 0]
+
+                if rate_next >= self.min_uav_rate:
+                    lm_path.append(m_loc_next)
+                else:
+                    lm_path.append(lm_path[-1])
+
+        # lm_path_to_plot = self.combine_paths(lm_path, lm_ue_path)
 
         return lm_path
 
 
 class TwoRelaysAbovePathPlanner(PathPlanner):
+    """
+    Two UAVs take off vertically from the BS to the highest flight level. 
+        UAV-1 stays at 1/3 of the distance between the BS and the UE
+        UAV-2 flies to the point at 2/3 the distance between the BS and the UE.
+    """
 
     _name_on_figs = "Benchmark 2"
 
@@ -1089,7 +1375,7 @@ class TwoRelaysAbovePathPlanner(PathPlanner):
         print(f'    o {self.name}')
 
         def plan_path_without_rmin():
-            l_loc_vs_time, num_takeoff_int, num_fly_int = self._path_w_takeoff(
+            l_loc_vs_time, num_takeoff_int, num_fly_int = self._plan_path_w_takeoff(
                 uav_loc_start, ue_loc, samp_int, max_uav_speed)
 
             one_third_bs2ue = int(np.ceil((num_fly_int / 3)))
@@ -1122,12 +1408,237 @@ class TwoRelaysAbovePathPlanner(PathPlanner):
         return lm_path
 
 
+# [lee2022trajectory]
+class TwoRelaysOneMidOneAboveUEPathPlanner(PathPlanner):
+    """
+    Two UAVs take off vertically from the BS to the highest flight level.
+        UAV-1 stays in the middle between the BS and the UE.
+        UAV-2 flies above the UE.
+    """
+
+    _name_on_figs = "Lee et al."
+
+    def __init__(self, fly_height=None, min_uav_rate=None, **kwargs):
+
+        super().__init__(**kwargs)
+        self.fly_height = fly_height
+        self.min_uav_rate = min_uav_rate
+
+    def plan_path_to_serve_static_ue(self,
+                                     bs_loc,
+                                     ue_loc,
+                                     samp_int,
+                                     max_uav_speed,
+                                     uav_loc_start=None):
+        """
+            Plan the paths without the constraint on min_uav_rate
+        """
+
+        if uav_loc_start == None:
+            uav_loc_start = bs_loc
+
+        print(f'    o {self.name}')
+
+        l_loc_uav1 = self._plan_path_w_takeoff(uav_loc_start,
+                                               (bs_loc + ue_loc) / 2, samp_int,
+                                               max_uav_speed)[0]
+        lm_path_uav1 = [loc[None, :] for loc in l_loc_uav1]
+
+        l_loc_uav2 = self._plan_path_w_takeoff(uav_loc_start, ue_loc, samp_int,
+                                               max_uav_speed)[0]
+        lm_path_uav2 = [loc[None, :] for loc in l_loc_uav2]
+
+        lm_path_coarse = self.combine_paths(lm_path_uav1, lm_path_uav2)
+        lm_path = self.resample(lm_path_coarse, samp_int, max_uav_speed)
+        lm_path = self.constrain_path_with_rmin(lm_path, self.min_uav_rate,
+                                                bs_loc)
+
+        return lm_path
+
+    def plan_path_to_serve_moving_ue(self, bs_loc, lm_ue_path):
+
+        print(f'    o {self.name}')
+
+        # take off
+        fly_grid = self._environment.fly_grid.clone()
+        lv_loc_takeoff = self.plan_takeoff_path(fly_grid, bs_loc)
+
+        # disable the grid points that are lower than l_fly_levels[-1]
+        def is_at_least_height(pt, height):
+            return pt[2] >= height
+
+        fly_grid.disable_by_indicator(
+            lambda pt: not is_at_least_height(pt, lv_loc_takeoff[-1][2]))
+
+        lm_path = []
+        for ind_loc, m_ue_loc in enumerate(lm_ue_path):
+
+            if ind_loc < len(lv_loc_takeoff):
+                m_loc_uav1 = lv_loc_takeoff[ind_loc][None, :]
+                m_loc_uav2 = lv_loc_takeoff[ind_loc][None, :]
+            else:
+
+                # next loc for uav1
+                m_loc_uav1_next = self.find_adjacent_grid_pt_closest_ue(
+                    fly_grid, lm_path[-1][0],
+                    (bs_loc + m_ue_loc[0]) / 2)[None, :]
+                rate_uav1_next = self.rate_from_path(self._channel,
+                                                     [m_loc_uav1_next],
+                                                     self.min_uav_rate,
+                                                     bs_loc,
+                                                     lm_ue_path=None)[0, 0]
+                if rate_uav1_next >= 2 * self.min_uav_rate:
+                    m_loc_uav1 = m_loc_uav1_next
+
+                # next loc for uav2
+                m_loc_uav2_next = self.find_adjacent_grid_pt_closest_ue(
+                    fly_grid, lm_path[-1][1], m_ue_loc[0])[None, :]
+                conf_pt = np.concatenate((m_loc_uav1, m_loc_uav2_next), axis=0)
+                rate_uav2_next = self.rate_from_path(self._channel, [conf_pt],
+                                                     self.min_uav_rate,
+                                                     bs_loc,
+                                                     lm_ue_path=None)[1, 0]
+                if rate_uav2_next >= self.min_uav_rate:
+                    m_loc_uav2 = m_loc_uav2_next
+
+            lm_path.append(np.concatenate((m_loc_uav1, m_loc_uav2), axis=0))
+
+        # lm_path_to_plot = self.combine_paths(lm_path, lm_ue_path)
+
+        return lm_path
+
+
+# [zhang2018multi]
+class TwoRelaysMaxRatePathPlanner(PathPlanner):
+    """
+    Two UAVs take off vertically from the BS to the highest flight level. 
+        UAV-1 stays above the BS
+        UAV-2 flies horizontally towards the grid point that maximizes the UE rate.
+    
+    From [zhang2018multi]
+    """
+
+    _name_on_figs = "Zhang et al."
+
+    def __init__(self, fly_height=None, min_uav_rate=None, **kwargs):
+
+        super().__init__(**kwargs)
+        self.fly_height = fly_height
+        self.min_uav_rate = min_uav_rate
+
+    def plan_path_to_serve_static_ue(self,
+                                     bs_loc,
+                                     ue_loc,
+                                     samp_int,
+                                     max_uav_speed,
+                                     uav_loc_start=None):
+        """
+            Plan the paths without the constraint on min_uav_rate
+        """
+
+        if uav_loc_start == None:
+            uav_loc_start = bs_loc
+
+        print(f'    o {self.name}')
+
+        lv_loc_uav1 = self._plan_take_off_path(uav_loc_start, samp_int,
+                                               max_uav_speed)
+        lm_path_uav1 = [loc[None, :] for loc in lv_loc_uav1]
+
+        v_des_grid_pt = self.find_highest_grid_pt_max_rate(
+            self._environment,
+            self._channel,
+            self.min_uav_rate,
+            bs_loc,
+            ue_loc,
+            loc_uav1=lm_path_uav1[-1][0])
+
+        lv_loc_uav2 = self._plan_path_w_takeoff(uav_loc_start, v_des_grid_pt,
+                                                samp_int, max_uav_speed)[0]
+        lm_path_uav2 = [loc[None, :] for loc in lv_loc_uav2]
+
+        lm_path_coarse = self.combine_paths(lm_path_uav1, lm_path_uav2)
+        lm_path = self.resample(lm_path_coarse, samp_int, max_uav_speed)
+        lm_path = self.constrain_path_with_rmin(lm_path, self.min_uav_rate,
+                                                bs_loc)
+
+        return lm_path
+
+    def plan_path_to_serve_moving_ue(self, bs_loc, lm_ue_path):
+
+        def find_conf_pt_for_uav2_to_max_rate(channel, min_uav_rate,
+                                              v_loc_uav_1, m_grid_pts_on_top,
+                                              bs_loc, v_loc_ue):
+            l_rate_candidates = []
+            for grid_pt_candidate in m_grid_pts_on_top:
+                conf_pt = np.concatenate(
+                    (v_loc_uav_1[None, :], grid_pt_candidate[None, :]), axis=0)
+                l_rate_candidates.append(
+                    PathPlanner.conf_pt_to_ue_rate(channel, conf_pt,
+                                                   min_uav_rate, bs_loc,
+                                                   v_loc_ue))
+            v_des_grid_pt = m_grid_pts_on_top[np.argmax(l_rate_candidates)]
+
+            return v_des_grid_pt
+
+        print(f'    o {self.name}')
+
+        # take off
+        fly_grid = self._environment.fly_grid.clone()
+        lv_loc_takeoff = self.plan_takeoff_path(fly_grid, bs_loc)
+
+        # disable the grid points that are lower than l_fly_levels[-1]
+        def is_at_least_height(pt, height):
+            return pt[2] >= height
+
+        fly_grid.disable_by_indicator(
+            lambda pt: not is_at_least_height(pt, lv_loc_takeoff[-1][2]))
+        m_grid_pts_on_top = fly_grid.list_pts()
+
+        lm_path = []
+        for ind_loc, m_ue_loc in enumerate(lm_ue_path):
+
+            if ind_loc < len(lv_loc_takeoff):
+                m_loc_uav1 = lv_loc_takeoff[ind_loc][None, :]
+                m_loc_uav2 = lv_loc_takeoff[ind_loc][None, :]
+            else:
+
+                # find the grid point that maximizes the UE rate
+                v_des_grid_pt = find_conf_pt_for_uav2_to_max_rate(
+                    self._channel, self.min_uav_rate, m_loc_uav1[0],
+                    m_grid_pts_on_top, bs_loc, m_ue_loc[0])
+
+                # next loc for uav2
+                m_loc_uav2_next = self.find_adjacent_grid_pt_closest_ue(
+                    fly_grid, lm_path[-1][1], v_des_grid_pt)[None, :]
+                conf_pt = np.concatenate((m_loc_uav1, m_loc_uav2_next), axis=0)
+                rate_uav2_next = self.rate_from_path(self._channel, [conf_pt],
+                                                     self.min_uav_rate,
+                                                     bs_loc,
+                                                     lm_ue_path=None)[1, 0]
+                if rate_uav2_next >= self.min_uav_rate:
+                    m_loc_uav2 = m_loc_uav2_next
+
+            lm_path.append(np.concatenate((m_loc_uav1, m_loc_uav2), axis=0))
+
+        # lm_path_to_plot = self.combine_paths(lm_path, lm_ue_path)
+
+        return lm_path
+
+
+# [yanmaz2018path]
 class UniformlySpreadRelaysPathPlanner(PathPlanner):
-    """ Benchmark 3"""
+    """ 
+        Was Benchmark 3
+    """
 
-    _name_on_figs = "Benchmark 3"
+    _name_on_figs = "Yanmaz et al."
 
-    def __init__(self, num_uavs=4, min_uav_rate=None, fly_height=40, **kwargs):
+    def __init__(self,
+                 num_uavs=None,
+                 min_uav_rate=None,
+                 fly_height=None,
+                 **kwargs):
 
         super().__init__(**kwargs)
         self.num_uavs = num_uavs
@@ -1146,61 +1657,21 @@ class UniformlySpreadRelaysPathPlanner(PathPlanner):
 
         print(f'    o {self.name}')
 
-        def plan_path_without_rmin():
+        # path uav 1
+        lv_locs_uav1 = self._plan_take_off_path(uav_loc_start, samp_int,
+                                                max_uav_speed)
+        lm_path_uav1 = [loc[None, :] for loc in lv_locs_uav1]
 
-            lm_path = []
+        # path uav 2
+        lv_locs_uav2 = self._plan_path_w_takeoff(uav_loc_start, ue_loc,
+                                                 samp_int, max_uav_speed)[0]
+        lm_path_uav2 = [loc[None, :] for loc in lv_locs_uav2]
 
-            v_is_update = [True] * self.num_uavs
-
-            l_loc_vs_time, num_takeoff_int, num_fly_int = self._path_w_takeoff(
-                uav_loc_start, ue_loc, samp_int, max_uav_speed)
-
-            m_uav_loc = np.array(l_loc_vs_time)
-            total_time_steps = num_takeoff_int + num_fly_int
-
-            dis_in_time_steps_btw_uav = int(
-                np.ceil(num_fly_int / (self.num_uavs - 1)))
-
-            if m_uav_loc.shape[0] == 2:
-                m_uav_des = m_uav_loc
-            else:
-                m_uav_des = m_uav_loc[
-                    num_takeoff_int::dis_in_time_steps_btw_uav - 1]
-
-            # Initialize: place all UAVs above the BS
-            lm_path.append(
-                np.tile(np.array([m_uav_loc[0]]), (self.num_uavs, 1)))
-
-            # Update the locations of the UAVs at each time step
-            for ind_step in range(1, total_time_steps):
-
-                # If we put the following line outside of the for loop for ind_step, the results of lm_path will be wrong. Do not know why.
-                m_uavs_loc_temp = np.zeros((self.num_uavs, 3))
-
-                for ind_uav in range(self.num_uavs):
-
-                    if v_is_update[ind_uav] == True:
-                        m_uavs_loc_temp[ind_uav] = m_uav_loc[ind_step]
-
-                        # Check if a UAV arrives at its destination
-                        if all(m_uavs_loc_temp[ind_uav] == m_uav_des[ind_uav]):
-                            v_is_update[ind_uav] = False
-
-                    else:
-                        m_uavs_loc_temp[ind_uav] = lm_path[ind_step -
-                                                           1][ind_uav]
-
-                lm_path.append(m_uavs_loc_temp)
-
-            return lm_path
-
-        lm_path_coarse = plan_path_without_rmin()
-
-        if self.min_uav_rate is not None:
-            lm_path_coarse = self.constrain_path_with_rmin(
-                lm_path_coarse, self.min_uav_rate, bs_loc)
-
+        # combine paths
+        lm_path_coarse = self.combine_paths(lm_path_uav1, lm_path_uav2)
         lm_path = self.resample(lm_path_coarse, samp_int, max_uav_speed)
+        lm_path = self.constrain_path_with_rmin(lm_path, self.min_uav_rate,
+                                                bs_loc)
 
         return lm_path
 
@@ -1215,9 +1686,9 @@ class UniformlySpreadRelaysPathPlanner(PathPlanner):
               i-th row is the location of the nearest grid point to the BS at
               the fly level with height l_fly_levels[i].
 
+        
         The grid points whose height is lower than l_fly_levels[-1] are
         disabled.
-        
         Returns: lm_path: list of 2 x 3 matrices. lm_path[n] = [loc_uav1[n],
         loc_uav2[n]] presents the locations of the two UAVs at time step n. If
 
@@ -1234,46 +1705,46 @@ class UniformlySpreadRelaysPathPlanner(PathPlanner):
         print(f'    o {self.name}')
 
         fly_grid = self._environment.fly_grid.clone()
-        # compute the number of fly levels
-        m_grid_pts = fly_grid.list_pts()
-        l_fly_levels = list(set(m_grid_pts[:, 2]))
-        l_fly_levels.sort()
-
-        # find the nearest grid point to the BS
-        m_takeoff_path = np.tile(fly_grid.nearest_pt(bs_loc),
-                                 (len(l_fly_levels), 1))
-        m_takeoff_path[:, 2] = l_fly_levels
-        m_takeoff_path = np.concatenate((bs_loc[
-            np.newaxis,
-        ], m_takeoff_path),
-                                        axis=0)
+        lv_loc_takeoff = self.plan_takeoff_path(fly_grid, bs_loc)
 
         # disable the grid points that are lower than l_fly_levels[-1]
         def is_at_least_height(pt, height):
             return pt[2] >= height
 
         fly_grid.disable_by_indicator(
-            lambda pt: not is_at_least_height(pt, l_fly_levels[-1]))
+            lambda pt: not is_at_least_height(pt, lv_loc_takeoff[-1][2]))
         l_grid_pts_on_top = fly_grid.list_pts()
 
         lm_path = []
         for ind_loc, m_ue_loc in enumerate(lm_ue_path):
 
-            if ind_loc <= len(l_fly_levels):
-                m_loc_uav1 = m_takeoff_path[ind_loc][None, :]
-                m_loc_uav2 = m_takeoff_path[ind_loc][None, :]
+            if ind_loc < len(lv_loc_takeoff):
+                m_loc_uav1 = lv_loc_takeoff[ind_loc][None, :]
+                m_loc_uav2 = lv_loc_takeoff[ind_loc][None, :]
             else:
 
                 # find the adjacent grid points of lm_path[-1]
-                l_adj_grid_pts = l_grid_pts_on_top[list(
-                    fly_grid.get_inds_adjacent(lm_path[-1][1, :],
-                                               l_grid_pts_on_top))]
+                # l_adj_grid_pts = l_grid_pts_on_top[list(
+                #     fly_grid.get_inds_adjacent(lm_path[-1][1, :],
+                #                                l_grid_pts_on_top))]
 
-                m_loc_uav2 = l_adj_grid_pts[np.argmin([
-                    np.linalg.norm(pt - m_ue_loc) for pt in l_adj_grid_pts
-                ])][None, :]
+                # m_loc_uav2 = l_adj_grid_pts[np.argmin([
+                #     np.linalg.norm(pt - m_ue_loc) for pt in l_adj_grid_pts
+                # ])][None, :]
+
+                m_loc_uav2_next = self.find_adjacent_grid_pt_closest_ue(
+                    fly_grid, lm_path[-1][1], m_ue_loc[0])[None, :]
+                conf_pt = np.concatenate((m_loc_uav1, m_loc_uav2_next), axis=0)
+                rate_uav2_next = self.rate_from_path(self._channel, [conf_pt],
+                                                     self.min_uav_rate,
+                                                     bs_loc,
+                                                     lm_ue_path=None)[1, 0]
+                if rate_uav2_next >= self.min_uav_rate:
+                    m_loc_uav2 = m_loc_uav2_next
 
             lm_path.append(np.concatenate((m_loc_uav1, m_loc_uav2), axis=0))
+
+        # lm_path_to_plot = self.combine_paths(lm_path, lm_ue_path)
 
         return lm_path
 
@@ -1302,8 +1773,13 @@ class RandomRoadmapPathPlanner(PathPlanner):
                  **kwargs):
         """
         Assumption: the grid spacing of self._environment.fly_grid must be
-        smaller than the side of all buildings. 
+        smaller than the side of all buildings.
 
+        Whenever planning a path for two UAVs to serve a static UE, attribute
+        self.b_no_waiting_or_lifting is initially set to True inside function
+        _get_path_both_uavs_given_path_uav2. If waiting or lifting is needed and
+        UAV-1 flies further than UAV-2 between two consecutive time steps, then
+        self.b_no_waiting_or_lifting is set to False.
 
         Args:
 
@@ -1323,7 +1799,8 @@ class RandomRoadmapPathPlanner(PathPlanner):
               building. This in practice can be avoided just by adopting a
               denser grid or by enlarging the building model. 
 
-            - 'fly_height': to have the same interfact with other planners.
+            - 'fly_height': to have the same interface with other planners. Not
+              used.
 
             - `des_coor`: Currently, the destination set is defined as the set
               of configuration points whose UAVs have the x and y coordinates
@@ -1385,25 +1862,8 @@ class RandomRoadmapPathPlanner(PathPlanner):
         self.ue_rate_below_target_penalty = ue_rate_below_target_penalty
         self.b_tentative = b_tentative
 
-    # @property
-    # def name(self):
-    #     if self.b_tentative:
-    #         return self.__class__.__name__ + "Tentative"
-    #     else:
-    #         return self.__class__.__name__
-
-    # @property
-    # def name_on_figs(self):
-    #     if self.b_tentative:
-    #         return self._name_on_figs + " - Tentative"
-    #     else:
-    #         return self._name_on_figs
-
     def plan_path_to_serve_static_ue(self, bs_loc, ue_loc, samp_int,
                                      max_uav_speed):
-        """
-        TODO: write this docstring.
-        """
 
         def plan_path_coarse(bs_loc, ue_loc):
 
@@ -1453,7 +1913,7 @@ class RandomRoadmapPathPlanner(PathPlanner):
                            axis=1))
 
             def get_conf_pts(bs_loc, ue_loc, mode="random"):
-                """ Returns a num_conf_pts x 2 x 3 array. All the configuration points
+                """ Returns a list of 2 x 3 arrays. All the configuration points
                 must be in Qfree"""
 
                 def get_conf_pts_random():
@@ -1803,7 +2263,7 @@ class RandomRoadmapPathPlanner(PathPlanner):
                             # This happens when self.min_ue_rate is too high.
                             return None
 
-                        lm_path = self._get_path_both_uavs_given_path_uav2_2serve_static_ue(
+                        lm_path = self._get_path_both_uavs_given_path_uav2(
                             bs_loc, ue_loc, l_path_uav2)
 
                         return lm_path
@@ -1851,33 +2311,49 @@ class RandomRoadmapPathPlanner(PathPlanner):
                 elif mode == "feasible":
                     return get_conf_pts_from_feasible_path(bs_loc, ue_loc)
 
+            def check_travel_dist(l_shortest_path):
+                lv_dist_travel = []
+                for ind in range(len(l_shortest_path) - 1):
+                    lv_dist_travel.append(
+                        np.linalg.norm(l_shortest_path[ind + 1] -
+                                       l_shortest_path[ind],
+                                       axis=1))
+                m_dist_travel = np.array(lv_dist_travel).T
+                v_diff_dist = m_dist_travel[1] - m_dist_travel[0]
+                if any(v_diff_dist < 0):
+                    print(
+                        "                . Found non-optimal path, UAV-1 travels a longer distance than UAV-2"
+                    )
+                    self.b_no_waiting_or_lifting = False
+
             self.bs_loc = bs_loc
 
             # Draw configuration points
-            t_conf_pt = get_conf_pts(bs_loc,
-                                     ue_loc,
-                                     mode=self.mode_draw_conf_pt)
-            if t_conf_pt is None:
+            l_conf_pts = get_conf_pts(bs_loc,
+                                      ue_loc,
+                                      mode=self.mode_draw_conf_pt)
+            if l_conf_pts is None:
 
                 print('RR: t_conf_pt is None, return None')
                 return None
 
             if self.b_tentative:
+                check_travel_dist(l_conf_pts)
                 print("                . Return tentative path")
-                return t_conf_pt
+                return l_conf_pts
 
             # Compute the cost
-            m_cost = self._get_cost_all_cf_pts_2serve_static_ue(t_conf_pt)
+            m_cost = self._get_cost_all_cf_pts_2serve_static_ue(l_conf_pts)
 
             # Get destination configuration pionts whose last uav is in LoS with the UE
             if self._destination == "los":
-                des_ind = get_conf_pt_inds_with_los_to_ue(t_conf_pt, ue_loc)
+                des_ind = get_conf_pt_inds_with_los_to_ue(l_conf_pts, ue_loc)
             elif self._destination == "nearest":
                 des_ind = find_nearest_conf_pt_ind(
-                    t_conf_pt[:, -1, :][:, None, :], ue_loc[None, :])
+                    l_conf_pts[:, -1, :][:, None, :], ue_loc[None, :])
             elif self._destination == "min_ue_rate":
                 des_ind = get_conf_pt_inds_with_at_least_min_ue_rate(
-                    t_conf_pt, bs_loc, ue_loc)
+                    l_conf_pts, bs_loc, ue_loc)
             else:
                 raise ValueError
 
@@ -1886,8 +2362,9 @@ class RandomRoadmapPathPlanner(PathPlanner):
 
             if l_shortest_path_inds is not None:
                 l_shortest_path = [
-                    t_conf_pt[ind] for ind in l_shortest_path_inds
+                    l_conf_pts[ind] for ind in l_shortest_path_inds
                 ]
+
                 return l_shortest_path
             else:
                 # This may happen if there are corners that make that adjacent grid
@@ -1940,7 +2417,7 @@ class RandomRoadmapPathPlanner(PathPlanner):
             """
             UAV-2 flies in the set of feasible locations R(qBS, 2rcc, rcc) which
             includes its destinations at every time step R(qBS, 2rcc+r_min_ue,
-            rcc+r_min_ue) \cap R(qUE[n],r_min_ue). From time step n to (n +1),
+            rcc+r_min_ue) \\cap R(qUE[n],r_min_ue). From time step n to (n +1),
             traveling to a location that is not a destination of time step (n+1)
             has higher cost than traveling to a destination.
             
@@ -2116,7 +2593,7 @@ class RandomRoadmapPathPlanner(PathPlanner):
                 # Compute a num_grid_pts x num_grid_pts matrix whose [i,j]-th
                 # entry is ue_rate_below_target_penalty if C1 and np.Inf
                 # otherwise.
-                m_block_base = np.full((num_grid_pts, num_grid_pts), np.Inf)
+                m_block_base = np.full((num_grid_pts, num_grid_pts), np.inf)
                 for ind_1 in range(num_grid_pts):
                     for ind_2 in range(ind_1, num_grid_pts):
                         if ind_1 == ind_2:
@@ -2901,9 +3378,14 @@ class RandomRoadmapPathPlanner(PathPlanner):
                                                       ind_node_start=ind_start,
                                                       ind_nodes_end=l_ind_end)
 
-        l_shortest_path = [t_conf_pt[ind] for ind in l_shortest_path_inds]
-
-        return l_shortest_path
+        if l_shortest_path_inds is not None:
+            l_shortest_path = [t_conf_pt[ind] for ind in l_shortest_path_inds]
+            return l_shortest_path
+        else:
+            print(
+                "       Cannot find an initial path for UAV-2. Probably, the graph is disconnected."
+            )
+            return None
 
     def _get_cost_btw_conf_pts(self, conf_pt1, conf_pt2, loc_ue=None):
         """
@@ -2936,7 +3418,7 @@ class RandomRoadmapPathPlanner(PathPlanner):
                                                 self.min_uav_rate, self.bs_loc,
                                                 loc_ue)
             else:
-                return np.Inf
+                return np.inf
 
         else:
             raise NotImplementedError
@@ -2954,11 +3436,21 @@ class RandomRoadmapPathPlanner(PathPlanner):
             l_path_lifted = l_path_lifted + [new_point]
         return l_path_lifted
 
-    def _get_path_both_uavs_given_path_uav2_2serve_static_ue(
-            self, bs_loc, l_known_ue_locs, l_path_uav2, uav1_start_loc=None):
+    def _get_path_both_uavs_given_path_uav2(self,
+                                            bs_loc,
+                                            l_known_ue_locs,
+                                            l_path_uav2,
+                                            uav1_start_loc=None):
         """
-            Plan the path of UAV-1 given the path of UAV-2 by lifting the path of UAV-2
+        Plan the path of UAV-1 given the path of UAV-2 by waiting and lifting
+        the path of UAV-2
+
+        self.b_no_waiting_or_lifting is to check if waiting or lifting is
+        needed. If True, there are no waiting or lifting. Otherwise, waiting or
+        lifting is needed.    
         """
+
+        self.b_no_waiting_or_lifting = True
 
         def get_path_uav1_given_path_uav2_with_waiting(l_initial_path_uav_2,
                                                        bs_loc,
@@ -3088,7 +3580,7 @@ class RandomRoadmapPathPlanner(PathPlanner):
                                 m_stored_cost[ind_1, ind_2] = np.linalg.norm(
                                     m_grid_pts[ind_1] - m_grid_pts[ind_2])
                             else:
-                                m_stored_cost[ind_1, ind_2] = np.Inf
+                                m_stored_cost[ind_1, ind_2] = np.inf
 
                             return m_stored_cost[ind_1, ind_2]
 
@@ -3198,6 +3690,10 @@ class RandomRoadmapPathPlanner(PathPlanner):
                 for ind_block_ind_grid_pt in l_path_ind_block_ind_grid_pt
             ]
 
+            if len(l_path_uav_2) != len(l_initial_path_uav_2):
+                self.b_no_waiting_or_lifting = False
+                print('     UAV2 needs to wait')
+
             # 4. Combine and return the trajectories of both UAVs.
             l_path_uav_1 = [
                 m_grid_pts[ind_block_ind_grid_pt[1], None, :]
@@ -3223,12 +3719,15 @@ class RandomRoadmapPathPlanner(PathPlanner):
                 return lm_path_uavs
 
             # lift the path of UAV-2
+            print('     Lifting the path of UAV-2')
             l_path_uav2 = self._lift_path(l_path_uav2)
+            self.b_no_waiting_or_lifting = False
 
             if l_path_uav2 is None:
-                raise ValueError(
-                    "No path can be found even by lifting the path of UAV2. Most likely some buildings are higher than the highest grid point. "
+                print(
+                    "       No path can be found even by lifting the path of UAV2. Most likely i) some buildings are higher than the highest grid point or ii) disabling some grid points at random."
                 )
+                return None
 
     def _sample_around_tentative_path(self,
                                       lm_feas_path,
@@ -3550,7 +4049,7 @@ class RandomRoadmapPathPlanner(PathPlanner):
 
 class SegmentationPathPlanner(RandomRoadmapPathPlanner):
 
-    _name_on_figs = "Benchmark 4"
+    _name_on_figs = "Benchmark 6"
 
     integral_mode = 'c'  # Can be 'c' or 'python'
 
@@ -3649,7 +4148,7 @@ class SegmentationPathPlanner(RandomRoadmapPathPlanner):
 
             if l_path_uav2 is not None:
                 # plan path of both UAVs, given the path of UAV-2, included lifting and waiting in the path of UAV-2
-                lm_path_uavs = self._get_path_both_uavs_given_path_uav2_2serve_static_ue(
+                lm_path_uavs = self._get_path_both_uavs_given_path_uav2(
                     bs_loc, l_known_ue_locs, l_path_uav2, uav1_start_loc)
 
             # concatenate the path of the uavs
