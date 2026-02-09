@@ -1,10 +1,12 @@
-# Probabilistic Roadmaps for Flying Relay Path Planning
+<!-- # Probabilistic Roadmaps for Flying Relay Path Planning -->
 
-This repository contains an implementation of the PRFI algorithm as well as the code to reproduce the numerical experiments of the paper "Probabilistic Roadmaps for Flying Relay Path Planning" by Pham Q. Viet and Daniel Romero. 
+# Path Planning for Aerial Relays via Probabilistic Roadmaps
 
-The paper was presented at the 2023 IEEE Global Communications Conference - GLOBECOM 2023; URL: [conference paper](https://ieeexplore.ieee.org/document/10437427)
+This repository contains the implementation of the PRFI algorithm as well as the code to reproduce the numerical experiments of the paper "Path Planning for Aerial Relays via Probabilistic Roadmaps" by Pham Q. Viet and Daniel Romero.
 
-The journal version is available at [journal article](https://arxiv.org/abs/2310.11752v2).
+The [conference version](https://ieeexplore.ieee.org/document/10437427) was presented at the 2023 IEEE Global Communications Conference - GLOBECOM 2023.
+
+The [journal version](https://ieeexplore.ieee.org/document/11367010) is available at IEEE Transactions on Communications, Jan., 2026.
 
 - The implementation of the proposed PRFI is inside the folder named "code".
 
