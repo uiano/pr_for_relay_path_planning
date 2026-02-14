@@ -6,7 +6,7 @@ This repository contains the implementation of the PRFI algorithm as well as the
 
 The [conference version](https://ieeexplore.ieee.org/document/10437427) was presented at the 2023 IEEE Global Communications Conference - GLOBECOM 2023.
 
-The [journal version](https://ieeexplore.ieee.org/document/11367010) is available at IEEE Transactions on Communications, Jan., 2026.
+The [journal version](https://ieeexplore.ieee.org/document/11367010) is available at IEEE Transactions on Communications, Jan., 2026, and on [arXiv](https://arxiv.org/abs/2310.11752).
 
 - The implementation of the proposed PRFI is inside the folder named "code".
 
